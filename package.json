@@ -1,0 +1,34 @@
+{
+  "name": "eme-01b-polyfill",
+  "version": "0.1.0",
+  "description": "Standalone polyfill for unprefixed EME on top of webkit-prefixed EME v0.1b",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rolldown -c && tsc -p tsconfig.build.json",
+    "typecheck": "tsc",
+    "test": "vitest run",
+    "check": "biome check .",
+    "format": "biome check --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "core-js": "^3.50.0",
+    "happy-dom": "^21.0.3",
+    "rolldown": "^1.2.14",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
