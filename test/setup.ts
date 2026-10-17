@@ -6,3 +6,13 @@ import 'core-js/modules/es.uint8-array.from-hex';
 import 'core-js/modules/es.uint8-array.to-base64';
 import 'core-js/modules/es.uint8-array.to-hex';
 import 'core-js/modules/web.dom-exception.constructor';
+import { beforeEach } from 'vitest';
+import { install } from '../src';
+import { installFakeCdm, resetCdm } from './fake-cdm';
+
+installFakeCdm();
+install();
+
+beforeEach(() => {
+  resetCdm();
+});

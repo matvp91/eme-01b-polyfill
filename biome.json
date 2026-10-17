@@ -34,7 +34,8 @@
                 "match": "(.+)_",
                 "formats": ["camelCase"]
               }
-            ]
+            ],
+            "strictCase": false
           }
         },
         "noParameterProperties": "error"
