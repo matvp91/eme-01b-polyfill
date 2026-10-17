@@ -4,7 +4,7 @@
  * session IDs that belong to the media element.
  */
 
-export const SUPPORTED_KEY_SYSTEMS = ['com.widevine.alpha', 'webkit-org.w3.clearkey'];
+export const SUPPORTED_KEY_SYSTEMS = ['com.widevine.alpha', 'com.microsoft.playready', 'webkit-org.w3.clearkey'];
 
 export const MEDIA_KEYERR_UNKNOWN = 1;
 

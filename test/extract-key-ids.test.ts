@@ -1,25 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { extractKeyIds } from '../src/extract-key-ids';
-import { KID, keyIdsInitData, OTHER_KID, PLAYREADY_SYSTEM_ID, pssh, WIDEVINE_SYSTEM_ID } from './helpers';
+import {
+  KID,
+  keyIdsInitData,
+  OTHER_KID,
+  PLAYREADY_SYSTEM_ID,
+  playReadyObject,
+  pssh,
+  WIDEVINE_SYSTEM_ID,
+} from './helpers';
 
 function hexes(kids: Uint8Array[]): string[] {
   return kids.map((kid) => kid.toHex());
-}
-
-/** A PlayReady Object with one rights management header record. */
-function playReadyObject(xml: string): Uint8Array<ArrayBuffer> {
-  const record = new Uint8Array(xml.length * 2);
-  for (let i = 0; i < xml.length; i++) {
-    record[i * 2] = xml.charCodeAt(i);
-  }
-  const pro = new Uint8Array(10 + record.length);
-  const view = new DataView(pro.buffer);
-  view.setUint32(0, pro.length, true);
-  view.setUint16(4, 1, true);
-  view.setUint16(6, 1, true);
-  view.setUint16(8, record.length, true);
-  pro.set(record, 10);
-  return pro;
 }
 
 describe('extractKeyIds()', () => {
