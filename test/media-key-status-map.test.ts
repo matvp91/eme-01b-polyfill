@@ -1,26 +1,42 @@
 import { describe, expect, it } from 'vitest';
 import {
   attachedMediaKeys,
+  bufferToHex,
   CLEARKEY,
   clearKeyLicense,
   generatedSession,
   KID,
+  KID_HEX,
   keyIdsInitData,
+  LICENSE,
   licensedSession,
   OTHER_KID,
+  OTHER_KID_HEX,
   pssh,
   WIDEVINE_SYSTEM_ID,
 } from './helpers';
 
-function hex(keyId: ArrayBuffer): string {
-  return new Uint8Array(keyId).toHex();
+/** A session with a license whose init data had no key IDs. */
+async function sessionWithoutKeyIds(): Promise<MediaKeySession> {
+  const { mediaKeys } = await attachedMediaKeys();
+  const session = mediaKeys.createSession();
+  const initData = pssh(WIDEVINE_SYSTEM_ID, []);
+  await session.generateRequest('cenc', initData);
+  await session.update(LICENSE);
+  return session;
+}
+
+function keyIdHexes(map: MediaKeyStatusMap): string[] {
+  const keyIds = [...map.keys()];
+  return keyIds.map((keyId) => bufferToHex(keyId as ArrayBuffer));
 }
 
 describe('MediaKeyStatusMap', () => {
   it('is empty before the license is added', async () => {
     const { session } = await generatedSession();
+    const hasKey = session.keyStatuses.has(KID);
     expect(session.keyStatuses.size).toBe(0);
-    expect(session.keyStatuses.has(KID)).toBe(false);
+    expect(hasKey).toBe(false);
   });
 
   it('counts the keys', async () => {
@@ -30,24 +46,32 @@ describe('MediaKeyStatusMap', () => {
 
   it('accepts any BufferSource as key ID', async () => {
     const { session } = await licensedSession();
-    expect(session.keyStatuses.get(KID)).toBe('usable');
-    expect(session.keyStatuses.get(KID.slice().buffer)).toBe('usable');
-    expect(session.keyStatuses.get(new DataView(KID.slice().buffer))).toBe('usable');
+    const keyIdBuffer = KID.slice().buffer;
+    const keyIdView = new DataView(keyIdBuffer);
+    const statusByTypedArray = session.keyStatuses.get(KID);
+    const statusByBuffer = session.keyStatuses.get(keyIdBuffer);
+    const statusByDataView = session.keyStatuses.get(keyIdView);
+    expect(statusByTypedArray).toBe('usable');
+    expect(statusByBuffer).toBe('usable');
+    expect(statusByDataView).toBe('usable');
   });
 
   it('returns undefined for keys without a status', async () => {
     const { session } = await licensedSession();
-    expect(session.keyStatuses.has(OTHER_KID)).toBe(false);
-    expect(session.keyStatuses.get(OTHER_KID)).toBeUndefined();
+    const hasKey = session.keyStatuses.has(OTHER_KID);
+    const status = session.keyStatuses.get(OTHER_KID);
+    expect(hasKey).toBe(false);
+    expect(status).toBeUndefined();
   });
 
   it('passes the status, an ArrayBuffer key ID and the map to forEach()', async () => {
     const { session } = await licensedSession();
     const seen: unknown[] = [];
     session.keyStatuses.forEach((status, keyId, map) => {
-      seen.push(status, hex(keyId as ArrayBuffer), map);
+      const keyIdHex = bufferToHex(keyId as ArrayBuffer);
+      seen.push(status, keyIdHex, map);
     });
-    expect(seen).toEqual(['usable', KID.toHex(), session.keyStatuses]);
+    expect(seen).toEqual(['usable', KID_HEX, session.keyStatuses]);
   });
 
   // thisArg is ignored.
@@ -64,12 +88,15 @@ describe('MediaKeyStatusMap', () => {
   it('iterates with entries(), keys(), values() and for...of', async () => {
     const { session } = await licensedSession();
     const map = session.keyStatuses;
-    expect([...map.entries()].map(([keyId, status]) => [hex(keyId as ArrayBuffer), status])).toEqual([
-      [KID.toHex(), 'usable'],
-    ]);
-    expect([...map.keys()].map((keyId) => hex(keyId as ArrayBuffer))).toEqual([KID.toHex()]);
-    expect([...map.values()]).toEqual(['usable']);
-    expect([...map]).toHaveLength(1);
+    const entries = [...map.entries()];
+    const entryHexes = entries.map(([keyId, status]) => [bufferToHex(keyId as ArrayBuffer), status]);
+    const keyHexes = keyIdHexes(map);
+    const values = [...map.values()];
+    const iterated = [...map];
+    expect(entryHexes).toEqual([[KID_HEX, 'usable']]);
+    expect(keyHexes).toEqual([KID_HEX]);
+    expect(values).toEqual(['usable']);
+    expect(iterated).toHaveLength(1);
   });
 
   // [Symbol.iterator] is a separate method that calls entries().
@@ -82,44 +109,44 @@ describe('MediaKeyStatusMap', () => {
   // Insertion order.
   it.skip('iterates in key ID order', async () => {
     const { session } = await licensedSession([OTHER_KID, KID]);
-    expect([...session.keyStatuses.keys()].map((keyId) => hex(keyId as ArrayBuffer))).toEqual([
-      KID.toHex(),
-      OTHER_KID.toHex(),
-    ]);
+    const keyHexes = keyIdHexes(session.keyStatuses);
+    expect(keyHexes).toEqual([KID_HEX, OTHER_KID_HEX]);
   });
 
   // Duplicate key IDs from keyids init data are kept.
   it.skip('lists each key ID once', async () => {
     const { mediaKeys } = await attachedMediaKeys(CLEARKEY);
     const session = mediaKeys.createSession();
-    await session.generateRequest('keyids', keyIdsInitData([KID, KID]));
-    await session.update(clearKeyLicense([KID, KID]));
+    const initData = keyIdsInitData([KID, KID]);
+    const license = clearKeyLicense([KID, KID]);
+    await session.generateRequest('keyids', initData);
+    await session.update(license);
     expect(session.keyStatuses.size).toBe(1);
   });
 
   // A string is read as an empty key ID instead.
   it.skip('throws a TypeError for a key ID that is not a BufferSource', async () => {
     const { session } = await licensedSession();
-    expect(() => session.keyStatuses.has('not a key ID' as unknown as BufferSource)).toThrow(TypeError);
+    const notAKeyId = 'not a key ID' as unknown as BufferSource;
+    expect(() => session.keyStatuses.has(notAKeyId)).toThrow(TypeError);
   });
 
   // Deliberately, any key ID matches, as players look statuses up by their own key ID.
   it.skip('reports a single 0x00 key ID when the init data has no key IDs', async () => {
-    const { mediaKeys } = await attachedMediaKeys();
-    const session = mediaKeys.createSession();
-    await session.generateRequest('cenc', pssh(WIDEVINE_SYSTEM_ID, []));
-    await session.update(new Uint8Array([9]));
-    expect(session.keyStatuses.has(new Uint8Array([0]))).toBe(true);
-    expect(session.keyStatuses.has(KID)).toBe(false);
+    const session = await sessionWithoutKeyIds();
+    const dummyKeyId = new Uint8Array([0]);
+    const hasDummyKey = session.keyStatuses.has(dummyKeyId);
+    const hasKey = session.keyStatuses.has(KID);
+    expect(hasDummyKey).toBe(true);
+    expect(hasKey).toBe(false);
   });
 
   it('matches any key ID when the init data has no key IDs', async () => {
-    const { mediaKeys } = await attachedMediaKeys();
-    const session = mediaKeys.createSession();
-    await session.generateRequest('cenc', pssh(WIDEVINE_SYSTEM_ID, []));
-    await session.update(new Uint8Array([9]));
+    const session = await sessionWithoutKeyIds();
+    const status = session.keyStatuses.get(KID);
+    const keyHexes = keyIdHexes(session.keyStatuses);
     expect(session.keyStatuses.size).toBe(1);
-    expect(session.keyStatuses.get(KID)).toBe('usable');
-    expect([...session.keyStatuses.keys()].map((keyId) => hex(keyId as ArrayBuffer))).toEqual(['00']);
+    expect(status).toBe('usable');
+    expect(keyHexes).toEqual(['00']);
   });
 });

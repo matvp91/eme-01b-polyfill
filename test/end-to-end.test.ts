@@ -6,14 +6,25 @@
 
 import { describe, expect, it } from 'vitest';
 import { requestMediaKeySystemAccess } from '../src';
-import { cdm, fireKeyError, fireKeyMessage, fireNeedKey, MEDIA_KEYERR_OUTPUT, MEDIA_KEYERR_UNKNOWN } from './fake-cdm';
+import {
+  callsTo,
+  cdm,
+  fireKeyError,
+  fireKeyMessage,
+  fireNeedKey,
+  MEDIA_KEYERR_OUTPUT,
+  MEDIA_KEYERR_UNKNOWN,
+} from './fake-cdm';
 import {
   CLEARKEY,
   createVideo,
   KID,
+  KID_HEX,
+  LICENSE,
   nextEvent,
   nextTask,
   OTHER_KID,
+  OTHER_KID_HEX,
   PLAYREADY_SYSTEM_ID,
   playReadyObject,
   pssh,
@@ -32,6 +43,8 @@ const capturedRequestAccess = navigator.requestMediaKeySystemAccess.bind(navigat
 
 type RequestAccess = (keySystem: string, configs: MediaKeySystemConfiguration[]) => Promise<MediaKeySystemAccess>;
 
+type LicenseServer = (request: Uint8Array) => Uint8Array<ArrayBuffer>;
+
 interface Player {
   video: HTMLVideoElement;
   keySystem: string;
@@ -39,6 +52,17 @@ interface Player {
   licenseRequests: { messageType: MediaKeyMessageType; body: Uint8Array }[];
   errors: unknown[];
 }
+
+const answerWithLicense: LicenseServer = () => LICENSE;
+
+/** A ClearKey license server that returns a key for each requested key ID. */
+const answerWithClearKeys: LicenseServer = (request) => {
+  const requestJson = new TextDecoder().decode(request);
+  const { kids } = JSON.parse(requestJson) as { kids: string[] };
+  const keys = kids.map((kid) => ({ kty: 'oct', k: 'AAECAwQFBgcICQoLDA0ODw', kid }));
+  const licenseJson = JSON.stringify({ keys });
+  return new TextEncoder().encode(licenseJson);
+};
 
 /** A typical player configuration: unquoted codecs, empty robustness and no encryption scheme. */
 function playerConfigs(initDataTypes: string[]): MediaKeySystemConfiguration[] {
@@ -58,13 +82,13 @@ async function startPlayer(
   keySystem: string,
   initDataTypes = ['cenc'],
   requestAccess: RequestAccess = capturedRequestAccess,
-) {
+): Promise<Player> {
   const video = createVideo();
-  const access = await requestAccess(keySystem, playerConfigs(initDataTypes));
+  const configs = playerConfigs(initDataTypes);
+  const access = await requestAccess(keySystem, configs);
   const mediaKeys = await access.createMediaKeys();
   await video.setMediaKeys(mediaKeys);
-  const player: Player = { video, keySystem, mediaKeys, licenseRequests: [], errors: [] };
-  return player;
+  return { video, keySystem, mediaKeys, licenseRequests: [], errors: [] };
 }
 
 /** Converts between the little-endian GUID in PlayReady headers and the big-endian key ID. */
@@ -78,30 +102,32 @@ function swapGuidByteOrder(keyId: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuff
 function keyStatusTable(player: Player, session: MediaKeySession): Record<string, MediaKeyStatus> {
   const table: Record<string, MediaKeyStatus> = {};
   session.keyStatuses.forEach((status, keyId) => {
-    const bytes = new Uint8Array(keyId as ArrayBuffer);
-    table[bytes.toHex()] = status;
-    if (player.keySystem === PLAYREADY && bytes.length === 16) {
-      table[swapGuidByteOrder(bytes).toHex()] = status;
+    const keyIdBytes = new Uint8Array(keyId as ArrayBuffer);
+    const keyIdHex = keyIdBytes.toHex();
+    table[keyIdHex] = status;
+    if (player.keySystem === PLAYREADY && keyIdBytes.length === 16) {
+      const swappedKeyId = swapGuidByteOrder(keyIdBytes);
+      const swappedKeyIdHex = swappedKeyId.toHex();
+      table[swappedKeyIdHex] = status;
     }
   });
   return table;
 }
 
-/** A license server that answers each request with the bytes `respond` returns. */
-function listenForLicenseRequests(
-  player: Player,
-  session: MediaKeySession,
-  respond: (body: Uint8Array) => Uint8Array<ArrayBuffer>,
-): void {
+/** Sends each license request to `licenseServer` and passes its answer to the session. */
+function listenForLicenseRequests(player: Player, session: MediaKeySession, licenseServer: LicenseServer): void {
   session.addEventListener('message', (event) => {
     const { messageType, message } = event as MediaKeyMessageEvent;
     if (messageType !== 'license-request' && messageType !== 'license-renewal') {
-      player.errors.push(new Error(`Unexpected message type ${messageType}`));
+      const error = new Error(`Unexpected message type ${messageType}`);
+      player.errors.push(error);
       return;
     }
     const body = new Uint8Array(message);
     player.licenseRequests.push({ messageType, body });
-    session.update(respond(body)).catch((error) => {
+    const license = licenseServer(body);
+    const update = session.update(license);
+    update.catch((error) => {
       player.errors.push(error);
     });
   });
@@ -112,6 +138,7 @@ function listenForLicenseRequests(
  * key, it falls back to has() / get() after the key status timeout.
  */
 function waitForUsableKey(player: Player, session: MediaKeySession, keyId: Uint8Array<ArrayBuffer>): Promise<void> {
+  const keyIdHex = keyId.toHex();
   return new Promise((resolve, reject) => {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const handleStatus = (status: MediaKeyStatus | undefined) => {
@@ -121,18 +148,21 @@ function waitForUsableKey(player: Player, session: MediaKeySession, keyId: Uint8
         return;
       }
       if (status && status !== 'status-pending') {
-        reject(new Error(`Key status ${status}`));
+        const error = new Error(`Key status ${status}`);
+        reject(error);
       }
     };
     session.addEventListener('keystatuseschange', () => {
-      const status = keyStatusTable(player, session)[keyId.toHex()];
+      const table = keyStatusTable(player, session);
+      const status = table[keyIdHex];
       if (status) {
         handleStatus(status);
         return;
       }
       if (!timeout) {
         timeout = setTimeout(() => {
-          handleStatus(session.keyStatuses.get(keyId));
+          const fallbackStatus = session.keyStatuses.get(keyId);
+          handleStatus(fallbackStatus);
         }, KEY_STATUS_TIMEOUT);
       }
     });
@@ -145,10 +175,10 @@ async function loadKey(
   keyId: Uint8Array<ArrayBuffer>,
   initDataType: string,
   initData: ArrayBuffer,
-  respond: (body: Uint8Array) => Uint8Array<ArrayBuffer> = () => new Uint8Array([9]),
+  licenseServer = answerWithLicense,
 ): Promise<MediaKeySession> {
   const session = player.mediaKeys.createSession();
-  listenForLicenseRequests(player, session, respond);
+  listenForLicenseRequests(player, session, licenseServer);
   const usable = waitForUsableKey(player, session, keyId);
   await session.generateRequest(initDataType, initData);
   await usable;
@@ -165,126 +195,159 @@ async function destroy(player: Player, sessions: MediaKeySession[]): Promise<voi
 
 /** A Widevine PSSH box as found in an EXT-X-KEY tag, with the key ID in the Widevine data. */
 function widevinePssh(keyId: Uint8Array<ArrayBuffer>): ArrayBuffer {
-  return pssh(WIDEVINE_SYSTEM_ID, [], new Uint8Array([0x12, 0x10, ...keyId]), 0).buffer;
+  const widevineData = new Uint8Array([0x12, 0x10, ...keyId]);
+  const box = pssh(WIDEVINE_SYSTEM_ID, [], widevineData, 0);
+  return box.buffer;
+}
+
+/** A PlayReady PSSH box whose header stores `keyId`, which is a little-endian GUID there. */
+function playReadyPssh(keyId: Uint8Array<ArrayBuffer>): ArrayBuffer {
+  const encodedKeyId = keyId.toBase64();
+  const header = `<WRMHEADER version="4.0.0.0"><DATA><KID>${encodedKeyId}</KID></DATA></WRMHEADER>`;
+  const headerObject = playReadyObject(header);
+  const box = pssh(PLAYREADY_SYSTEM_ID, [], headerObject, 0);
+  return box.buffer;
 }
 
 describe('end to end', () => {
   it('plays Widevine content whose key is signalled in the playlist', async () => {
     const player = await startPlayer(WIDEVINE);
-    const session = await loadKey(player, KID, 'cenc', widevinePssh(KID));
+    const initData = widevinePssh(KID);
+    const session = await loadKey(player, KID, 'cenc', initData);
+    const table = keyStatusTable(player, session);
+    const status = session.keyStatuses.get(KID);
 
     expect(player.video.mediaKeys).toBe(player.mediaKeys);
     expect(player.licenseRequests).toEqual([{ messageType: 'license-request', body: cdm.keyRequest }]);
-    expect(keyStatusTable(player, session)).toEqual({ [KID.toHex()]: 'usable' });
-    expect(session.keyStatuses.get(KID)).toBe('usable');
+    expect(table).toEqual({ [KID_HEX]: 'usable' });
+    expect(status).toBe('usable');
     expect(player.errors).toEqual([]);
   });
 
   it('plays Widevine content with the polyfilled function passed in explicitly', async () => {
-    const player = await startPlayer(WIDEVINE, ['cenc'], requestMediaKeySystemAccess as unknown as RequestAccess);
-    await loadKey(player, KID, 'cenc', widevinePssh(KID));
+    const requestAccess = requestMediaKeySystemAccess as unknown as RequestAccess;
+    const player = await startPlayer(WIDEVINE, ['cenc'], requestAccess);
+    const initData = widevinePssh(KID);
+    await loadKey(player, KID, 'cenc', initData);
     expect(player.errors).toEqual([]);
   });
 
   it('plays PlayReady content, whose header stores the key ID as a little-endian GUID', async () => {
     const player = await startPlayer(PLAYREADY);
-    const header = `<WRMHEADER version="4.0.0.0"><DATA><KID>${KID.toBase64()}</KID></DATA></WRMHEADER>`;
-    const initData = pssh(PLAYREADY_SYSTEM_ID, [], playReadyObject(header), 0).buffer;
+    const initData = playReadyPssh(KID);
     const playerKeyId = swapGuidByteOrder(KID);
-
+    const playerKeyIdHex = playerKeyId.toHex();
     const session = await loadKey(player, playerKeyId, 'cenc', initData);
-    expect(keyStatusTable(player, session)[playerKeyId.toHex()]).toBe('usable');
+    const table = keyStatusTable(player, session);
+
+    expect(table[playerKeyIdHex]).toBe('usable');
     expect(player.errors).toEqual([]);
   });
 
   it('plays ClearKey content, starting the session from the encrypted event', async () => {
     const player = await startPlayer(CLEARKEY, ['cenc', 'keyids']);
-    const encrypted = nextEvent<MediaEncryptedEvent>(player.video, 'encrypted');
-    fireNeedKey(player.video, pssh(COMMON_SYSTEM_ID, [KID]));
-    const { initDataType, initData } = await encrypted;
+    const nextEncrypted = nextEvent<MediaEncryptedEvent>(player.video, 'encrypted');
+    const mediaInitData = pssh(COMMON_SYSTEM_ID, [KID]);
+    fireNeedKey(player.video, mediaInitData);
+    const { initDataType, initData } = await nextEncrypted;
     expect(initData).toBeInstanceOf(ArrayBuffer);
 
-    const answerWithKeys = (body: Uint8Array) => {
-      const { kids } = JSON.parse(new TextDecoder().decode(body)) as { kids: string[] };
-      const keys = kids.map((kid) => ({ kty: 'oct', k: 'AAECAwQFBgcICQoLDA0ODw', kid }));
-      return new TextEncoder().encode(JSON.stringify({ keys }));
-    };
-    const session = await loadKey(player, KID, initDataType, initData as ArrayBuffer, answerWithKeys);
+    const session = await loadKey(player, KID, initDataType, initData as ArrayBuffer, answerWithClearKeys);
+    const requestJson = new TextDecoder().decode(player.licenseRequests[0].body);
+    const request = JSON.parse(requestJson);
+    const encodedKid = KID.toBase64({ alphabet: 'base64url', omitPadding: true });
+    const table = keyStatusTable(player, session);
 
-    const request = JSON.parse(new TextDecoder().decode(player.licenseRequests[0].body));
-    expect(request).toEqual({ kids: [KID.toBase64({ alphabet: 'base64url', omitPadding: true })], type: 'temporary' });
-    expect(keyStatusTable(player, session)).toEqual({ [KID.toHex()]: 'usable' });
+    expect(request).toEqual({ kids: [encodedKid], type: 'temporary' });
+    expect(table).toEqual({ [KID_HEX]: 'usable' });
     expect(player.errors).toEqual([]);
   });
 
   it('keeps the sessions for different keys apart', async () => {
     const player = await startPlayer(WIDEVINE);
-    const [video, audio] = await Promise.all([
-      loadKey(player, KID, 'cenc', widevinePssh(KID)),
-      loadKey(player, OTHER_KID, 'cenc', widevinePssh(OTHER_KID)),
-    ]);
-    expect(keyStatusTable(player, video)).toEqual({ [KID.toHex()]: 'usable' });
-    expect(keyStatusTable(player, audio)).toEqual({ [OTHER_KID.toHex()]: 'usable' });
-    expect(video.keyStatuses.has(OTHER_KID)).toBe(false);
+    const videoInitData = widevinePssh(KID);
+    const audioInitData = widevinePssh(OTHER_KID);
+    const videoKeyLoad = loadKey(player, KID, 'cenc', videoInitData);
+    const audioKeyLoad = loadKey(player, OTHER_KID, 'cenc', audioInitData);
+    const [videoSession, audioSession] = await Promise.all([videoKeyLoad, audioKeyLoad]);
+    const videoTable = keyStatusTable(player, videoSession);
+    const audioTable = keyStatusTable(player, audioSession);
+    const videoSessionHasAudioKey = videoSession.keyStatuses.has(OTHER_KID);
+
+    expect(videoTable).toEqual({ [KID_HEX]: 'usable' });
+    expect(audioTable).toEqual({ [OTHER_KID_HEX]: 'usable' });
+    expect(videoSessionHasAudioKey).toBe(false);
     expect(player.errors).toEqual([]);
   });
 
   it('uses a session that was created earlier but not used yet', async () => {
     const player = await startPlayer(WIDEVINE);
-    const early = player.mediaKeys.createSession();
-    await loadKey(player, OTHER_KID, 'cenc', widevinePssh(OTHER_KID));
+    const earlySession = player.mediaKeys.createSession();
+    const otherInitData = widevinePssh(OTHER_KID);
+    await loadKey(player, OTHER_KID, 'cenc', otherInitData);
 
-    listenForLicenseRequests(player, early, () => new Uint8Array([9]));
-    const usable = waitForUsableKey(player, early, KID);
-    await early.generateRequest('cenc', widevinePssh(KID));
+    listenForLicenseRequests(player, earlySession, answerWithLicense);
+    const usable = waitForUsableKey(player, earlySession, KID);
+    const initData = widevinePssh(KID);
+    await earlySession.generateRequest('cenc', initData);
     await usable;
     expect(player.errors).toEqual([]);
   });
 
   it('renews the license when the CDM asks for it', async () => {
     const player = await startPlayer(WIDEVINE);
-    const session = await loadKey(player, KID, 'cenc', widevinePssh(KID));
+    const initData = widevinePssh(KID);
+    const session = await loadKey(player, KID, 'cenc', initData);
     fireKeyMessage(player.video, session.sessionId);
     await nextTask();
+    const messageTypes = player.licenseRequests.map((request) => request.messageType);
+    const addKeyCalls = callsTo('addKey');
 
-    expect(player.licenseRequests.map((request) => request.messageType)).toEqual([
-      'license-request',
-      'license-renewal',
-    ]);
-    expect(cdm.calls.filter((call) => call.method === 'addKey')).toHaveLength(2);
+    expect(messageTypes).toEqual(['license-request', 'license-renewal']);
+    expect(addKeyCalls).toHaveLength(2);
     expect(player.errors).toEqual([]);
   });
 
   it('reports output restrictions under the key ID the player looks up', async () => {
     const player = await startPlayer(WIDEVINE);
-    const session = await loadKey(player, KID, 'cenc', widevinePssh(KID));
+    const initData = widevinePssh(KID);
+    const session = await loadKey(player, KID, 'cenc', initData);
     fireKeyError(player.video, session.sessionId, { code: MEDIA_KEYERR_OUTPUT, systemCode: 0 });
-    expect(keyStatusTable(player, session)[KID.toHex()]).toBe('output-restricted');
+    const table = keyStatusTable(player, session);
+    expect(table[KID_HEX]).toBe('output-restricted');
   });
 
   it('reports expired keys under the key ID the player looks up', async () => {
     const player = await startPlayer(WIDEVINE);
-    const session = await loadKey(player, KID, 'cenc', widevinePssh(KID));
+    const initData = widevinePssh(KID);
+    const session = await loadKey(player, KID, 'cenc', initData);
     fireKeyError(player.video, session.sessionId, { code: MEDIA_KEYERR_UNKNOWN, systemCode: 1 });
-    expect(keyStatusTable(player, session)[KID.toHex()]).toBe('expired');
+    const table = keyStatusTable(player, session);
+    expect(table[KID_HEX]).toBe('expired');
   });
 
   it('makes the key usable after the key status timeout when the init data has no key IDs', async () => {
     const player = await startPlayer(WIDEVINE);
-    const started = Date.now();
-    await loadKey(player, KID, 'cenc', pssh(WIDEVINE_SYSTEM_ID, [], new Uint8Array(0), 0).buffer);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(KEY_STATUS_TIMEOUT);
+    const emptyWidevineData = new Uint8Array(0);
+    const box = pssh(WIDEVINE_SYSTEM_ID, [], emptyWidevineData, 0);
+    const startedAt = Date.now();
+    await loadKey(player, KID, 'cenc', box.buffer);
+    const elapsed = Date.now() - startedAt;
+
+    expect(elapsed).toBeGreaterThanOrEqual(KEY_STATUS_TIMEOUT);
     expect(player.errors).toEqual([]);
   });
 
   it('tears down without errors', async () => {
     const player = await startPlayer(WIDEVINE);
-    const session = await loadKey(player, KID, 'cenc', widevinePssh(KID));
+    const initData = widevinePssh(KID);
+    const session = await loadKey(player, KID, 'cenc', initData);
     await destroy(player, [session]);
+    const lastCall = cdm.calls.at(-1);
 
     expect(player.video.mediaKeys).toBeNull();
     await expect(session.closed).resolves.toBe('closed-by-application');
-    expect(cdm.calls.at(-1)).toEqual({ method: 'cancelKeyRequest', args: [WIDEVINE, session.sessionId] });
+    expect(lastCall).toEqual({ method: 'cancelKeyRequest', args: [WIDEVINE, session.sessionId] });
     expect(player.errors).toEqual([]);
   });
 });

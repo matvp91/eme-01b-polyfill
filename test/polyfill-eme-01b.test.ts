@@ -13,8 +13,10 @@ describe('install()', () => {
   });
 
   it('installs the polyfill, and keeps reporting true', () => {
-    expect(isInstalled()).toBe(true);
-    expect(install()).toBe(true);
+    const installed = isInstalled();
+    const installedAgain = install();
+    expect(installed).toBe(true);
+    expect(installedAgain).toBe(true);
   });
 
   it('replaces requestMediaKeySystemAccess and setMediaKeys', () => {
@@ -25,7 +27,8 @@ describe('install()', () => {
 
   it('does nothing on platforms with unprefixed EME', async () => {
     // The polyfill installed for the other tests looks just like native EME.
-    expect(await freshInstall()).toBe(false);
+    const installed = await freshInstall();
+    expect(installed).toBe(false);
   });
 
   it('does nothing on platforms without EME v0.1b', async () => {
@@ -40,7 +43,8 @@ describe('install()', () => {
     delete globals.MediaKeySystemAccess;
     delete proto.webkitGenerateKeyRequest;
     try {
-      expect(await freshInstall()).toBe(false);
+      const installed = await freshInstall();
+      expect(installed).toBe(false);
     } finally {
       navigator.requestMediaKeySystemAccess = saved.requestMediaKeySystemAccess;
       globals.MediaKeySystemAccess = saved.mediaKeySystemAccess;

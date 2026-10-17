@@ -42,6 +42,10 @@ const sessions = new WeakMap<HTMLMediaElement, Map<string, Session>>();
 
 let nextSessionId = 1;
 
+export function callsTo(method: Call['method']): Call[] {
+  return cdm.calls.filter((call) => call.method === method);
+}
+
 export function resetCdm(): void {
   cdm.calls = [];
   cdm.keyRequest = new Uint8Array([1, 2, 3]);
@@ -84,7 +88,9 @@ export function installFakeCdm(): void {
 
   proto.canPlayType = (type: string, keySystem?: string | null) => {
     if (keySystem) {
-      const supported = SUPPORTED_KEY_SYSTEMS.some((ks) => ks === keySystem || ks.startsWith(`${keySystem}.`));
+      const supported = SUPPORTED_KEY_SYSTEMS.some(
+        (supportedKeySystem) => supportedKeySystem === keySystem || supportedKeySystem.startsWith(`${keySystem}.`),
+      );
       if (!supported) {
         return '';
       }
@@ -114,7 +120,8 @@ export function installFakeCdm(): void {
       return;
     }
     const sessionId = String(nextSessionId++);
-    sessionsOf(this).set(sessionId, { keySystem: keySystem as string, keyAdded: false });
+    const elementSessions = sessionsOf(this);
+    elementSessions.set(sessionId, { keySystem: keySystem as string, keyAdded: false });
     let message: Uint8Array = cdm.keyRequest;
     if (keySystem === 'webkit-org.w3.clearkey') {
       message = initData;
@@ -138,7 +145,8 @@ export function installFakeCdm(): void {
     checkKeySystem(this, keySystem);
     let session: Session | undefined;
     if (sessionId !== null) {
-      session = sessionsOf(this).get(sessionId);
+      const elementSessions = sessionsOf(this);
+      session = elementSessions.get(sessionId);
       if (!session) {
         throw new DOMException(`Unknown session ${sessionId}.`, 'InvalidAccessError');
       }
@@ -164,36 +172,36 @@ export function installFakeCdm(): void {
     if (sessionId === null) {
       return;
     }
-    const session = sessionsOf(this).get(sessionId);
+    const elementSessions = sessionsOf(this);
+    const session = elementSessions.get(sessionId);
     if (!session || session.keySystem !== keySystem) {
       throw new DOMException(`Unknown session ${sessionId}.`, 'InvalidAccessError');
     }
     if (session.keyAdded) {
       throw new DOMException('Keys were already added.', 'InvalidStateError');
     }
-    sessionsOf(this).delete(sessionId);
+    elementSessions.delete(sessionId);
   };
 }
 
 /** Fires `webkitneedkey`, as the media element does when it finds init data. */
 export function fireNeedKey(media: HTMLMediaElement, initData: Uint8Array | null): void {
-  media.dispatchEvent(Object.assign(new Event('webkitneedkey'), { keySystem: null, sessionId: null, initData }));
+  const event = new Event('webkitneedkey');
+  Object.assign(event, { keySystem: null, sessionId: null, initData });
+  media.dispatchEvent(event);
 }
 
 /** Fires a `webkitkeymessage` the CDM sends on its own, e.g. to renew a license. */
 export function fireKeyMessage(media: HTMLMediaElement, sessionId: string): void {
-  const event = Object.assign(new Event('webkitkeymessage'), {
-    keySystem: 'com.widevine.alpha',
-    sessionId,
-    message: cdm.keyRequest,
-    defaultURL: null,
-  });
+  const event = new Event('webkitkeymessage');
+  Object.assign(event, { keySystem: 'com.widevine.alpha', sessionId, message: cdm.keyRequest, defaultURL: null });
   media.dispatchEvent(event);
 }
 
 /** Fires a `webkitkeyerror` the CDM reports on its own, e.g. when a key expires. */
 export function fireKeyError(media: HTMLMediaElement, sessionId: string, error: CdmError): void {
-  const event = Object.assign(new Event('webkitkeyerror'), {
+  const event = new Event('webkitkeyerror');
+  Object.assign(event, {
     keySystem: 'com.widevine.alpha',
     sessionId,
     errorCode: { code: error.code },
