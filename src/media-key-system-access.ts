@@ -48,20 +48,21 @@ export class MediaKeySystemAccess {
       // Per spec, each requested capability list needs at least one match.
       let ranAudioTests = false;
       let ranVideoTests = false;
-      for (const cap of config.audioCapabilities || []) {
-        if (cap.contentType) {
+      for (const capability of config.audioCapabilities || []) {
+        if (capability.contentType) {
           ranAudioTests = true;
           // Chrome <= 40 reports Widevine audio as unsupported when codecs are given.
-          if (canPlay(cap.contentType.split(';')[0])) {
-            newConfig.audioCapabilities?.push(cap);
+          const [mimeType] = capability.contentType.split(';');
+          if (canPlay(mimeType)) {
+            newConfig.audioCapabilities?.push(capability);
           }
         }
       }
-      for (const cap of config.videoCapabilities || []) {
-        if (cap.contentType) {
+      for (const capability of config.videoCapabilities || []) {
+        if (capability.contentType) {
           ranVideoTests = true;
-          if (canPlay(cap.contentType)) {
-            newConfig.videoCapabilities?.push(cap);
+          if (canPlay(capability.contentType)) {
+            newConfig.videoCapabilities?.push(capability);
           }
         }
       }
@@ -102,7 +103,8 @@ export class MediaKeySystemAccess {
    * @returns A promise for the new MediaKeys.
    */
   createMediaKeys(): Promise<MediaKeys> {
-    return Promise.resolve(new MediaKeys(this.internalKeySystem_));
+    const mediaKeys = new MediaKeys(this.internalKeySystem_);
+    return Promise.resolve(mediaKeys);
   }
 
   /**

@@ -126,7 +126,8 @@ export class MediaKeySession extends EventTargetShim {
 
   private generate_(initData: Uint8Array | null, offlineSessionId: string | null): Promise<void> {
     if (this.initialized_) {
-      return Promise.reject(new Error('The session is already initialized.'));
+      const error = new Error('The session is already initialized.');
+      return Promise.reject(error);
     }
 
     this.initialized_ = true;
@@ -135,7 +136,8 @@ export class MediaKeySession extends EventTargetShim {
     let mangledInitData: Uint8Array;
     if (this.type_ === 'persistent-license') {
       if (!offlineSessionId) {
-        mangledInitData = concat(new TextEncoder().encode('PERSISTENT|'), initData as Uint8Array);
+        const persistentPrefix = new TextEncoder().encode('PERSISTENT|');
+        mangledInitData = concat(persistentPrefix, initData as Uint8Array);
       } else {
         mangledInitData = new TextEncoder().encode(`LOAD_SESSION|${offlineSessionId}`);
       }
@@ -184,7 +186,8 @@ export class MediaKeySession extends EventTargetShim {
     if (this.keySystem_ === 'webkit-org.w3.clearkey') {
       // Unprefixed ClearKey licenses are a JWK set; v0.1b takes raw keys and key IDs.
       try {
-        const jwkSet = JSON.parse(new TextDecoder().decode(response)) as ClearKeyJwkSet;
+        const licenseJson = new TextDecoder().decode(response);
+        const jwkSet = JSON.parse(licenseJson) as ClearKeyJwkSet;
         keys = jwkSet.keys.map((jwk) => {
           if (jwk.kty !== 'oct') {
             throw new Error('kty');
@@ -198,10 +201,12 @@ export class MediaKeySession extends EventTargetShim {
           throw new Error('no keys');
         }
       } catch {
-        promise.reject(new Error('Response is not a valid JSON Web Key Set.'));
+        const error = new Error('Response is not a valid JSON Web Key Set.');
+        promise.reject(error);
         return;
       }
-      this.keyStatuses.setKeyIds(keys.map(([, keyId]) => keyId as Uint8Array));
+      const keyIds = keys.map(([, keyId]) => keyId as Uint8Array);
+      this.keyStatuses.setKeyIds(keyIds);
     } else {
       keys = [[response, null]];
     }
@@ -238,9 +243,11 @@ export class MediaKeySession extends EventTargetShim {
    * @returns A promise that resolves once the license request is generated.
    */
   generateRequest(initDataType: string, initData: BufferSource): Promise<void> {
-    const promise = this.generate_(toUint8(initData), null);
+    const initDataBytes = toUint8(initData);
+    const promise = this.generate_(initDataBytes, null);
     if (!this.keyStatuses.getKeyIds().length) {
-      this.keyStatuses.setKeyIds(extractKeyIds(initDataType, initData));
+      const keyIds = extractKeyIds(initDataType, initData);
+      this.keyStatuses.setKeyIds(keyIds);
     }
     return promise;
   }
@@ -255,7 +262,8 @@ export class MediaKeySession extends EventTargetShim {
     if (this.type_ === 'persistent-license') {
       return this.generate_(null, sessionId).then(() => true);
     }
-    return Promise.reject(new Error('Not a persistent session.'));
+    const error = new Error('Not a persistent session.');
+    return Promise.reject(error);
   }
 
   /**
@@ -266,7 +274,8 @@ export class MediaKeySession extends EventTargetShim {
    */
   update(response: BufferSource): Promise<void> {
     const nextUpdatePromise = Promise.withResolvers<void>();
-    this.update_(nextUpdatePromise, toUint8(response));
+    const responseBytes = toUint8(response);
+    this.update_(nextUpdatePromise, responseBytes);
     return nextUpdatePromise.promise;
   }
 
@@ -299,7 +308,8 @@ export class MediaKeySession extends EventTargetShim {
    */
   remove(): Promise<void> {
     if (this.type_ !== 'persistent-license') {
-      return Promise.reject(new Error('Not a persistent session.'));
+      const error = new Error('Not a persistent session.');
+      return Promise.reject(error);
     }
     return this.close();
   }

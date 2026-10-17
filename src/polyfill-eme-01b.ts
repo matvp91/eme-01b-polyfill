@@ -75,7 +75,8 @@ export function requestMediaKeySystemAccess(
   supportedConfigurations: MediaKeySystemConfiguration[],
 ): Promise<MediaKeySystemAccess> {
   try {
-    return Promise.resolve(new MediaKeySystemAccess(keySystem, supportedConfigurations));
+    const access = new MediaKeySystemAccess(keySystem, supportedConfigurations);
+    return Promise.resolve(access);
   } catch (exception) {
     return Promise.reject(exception);
   }

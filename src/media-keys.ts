@@ -105,7 +105,11 @@ export class MediaKeys {
     const isNew = session.keyStatuses.getStatus() === undefined;
     const keyIds = session.keyStatuses.getKeyIds();
 
-    let message = (rawMessage || new Uint8Array(0)).slice().buffer;
+    let messageBytes = rawMessage;
+    if (!messageBytes) {
+      messageBytes = new Uint8Array(0);
+    }
+    let message = messageBytes.slice().buffer;
     if (this.keySystem_ === 'webkit-org.w3.clearkey' && keyIds.length) {
       // v0.1b ClearKey sends the raw init data, but ClearKey servers expect the
       // JSON license request of unprefixed EME.
@@ -113,7 +117,8 @@ export class MediaKeys {
         kids: keyIds.map((keyId) => keyId.toBase64({ alphabet: 'base64url', omitPadding: true })),
         type: 'temporary',
       };
-      message = new TextEncoder().encode(JSON.stringify(request)).buffer;
+      const requestJson = JSON.stringify(request);
+      message = new TextEncoder().encode(requestJson).buffer;
     }
 
     let messageType: MediaKeyMessageType = 'license-renewal';
@@ -130,12 +135,19 @@ export class MediaKeys {
   };
 
   private onWebkitKeyAdded_ = (event: Event): void => {
-    this.findSession_((event as WebkitMediaKeyEvent).sessionId)?.ready();
+    const { sessionId } = event as WebkitMediaKeyEvent;
+    const session = this.findSession_(sessionId);
+    if (session) {
+      session.ready();
+    }
   };
 
   private onWebkitKeyError_ = (event: Event): void => {
     const keyEvent = event as WebkitMediaKeyEvent;
-    this.findSession_(keyEvent.sessionId)?.handleError(keyEvent);
+    const session = this.findSession_(keyEvent.sessionId);
+    if (session) {
+      session.handleError(keyEvent);
+    }
   };
 
   private findSession_(sessionId: string): MediaKeySession | null {

@@ -55,7 +55,8 @@ export class MediaKeyStatusMap {
     if (!this.keyIds_.length) {
       return true;
     }
-    const hex = toUint8(keyId).toHex();
+    const keyIdBytes = toUint8(keyId);
+    const hex = keyIdBytes.toHex();
     return this.keyIds_.some((id) => id.toHex() === hex);
   }
 
