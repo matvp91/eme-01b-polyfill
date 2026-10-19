@@ -1,6 +1,6 @@
 {
   "name": "eme-01b-polyfill",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Standalone polyfill for unprefixed EME on top of webkit-prefixed EME v0.1b",
   "license": "Apache-2.0",
   "author": "Matthias Van Parijs",
