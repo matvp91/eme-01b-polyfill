@@ -3,6 +3,20 @@
   "version": "0.1.0",
   "description": "Standalone polyfill for unprefixed EME on top of webkit-prefixed EME v0.1b",
   "license": "Apache-2.0",
+  "author": "Matthias Van Parijs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/matvp91/eme-01b-polyfill.git"
+  },
+  "homepage": "https://github.com/matvp91/eme-01b-polyfill#readme",
+  "bugs": "https://github.com/matvp91/eme-01b-polyfill/issues",
+  "keywords": [
+    "eme",
+    "polyfill",
+    "drm",
+    "encrypted-media",
+    "webkit"
+  ],
   "type": "module",
   "files": [
     "dist"
@@ -21,7 +35,8 @@
     "typecheck": "tsc",
     "test": "vitest run",
     "check": "biome check .",
-    "format": "biome check --write ."
+    "format": "biome check --write .",
+    "prepublishOnly": "npm run check && npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
